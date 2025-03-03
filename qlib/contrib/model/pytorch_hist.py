@@ -23,6 +23,7 @@ from ...data.dataset.handler import DataHandlerLP
 from ...contrib.model.pytorch_lstm import LSTMModel
 from ...contrib.model.pytorch_gru import GRUModel
 
+import pdb
 
 class HIST(Model):
     """HIST Model
@@ -61,6 +62,8 @@ class HIST(Model):
         seed=None,
         **kwargs,
     ):
+        torch.set_default_dtype(torch.float32)  # 强制使用单精度计算
+
         # Set logger.
         self.logger = get_module_logger("HIST")
         self.logger.info("HIST pytorch version...")
@@ -80,7 +83,8 @@ class HIST(Model):
         self.model_path = model_path
         self.stock2concept = stock2concept
         self.stock_index = stock_index
-        self.device = torch.device("cuda:%d" % (GPU) if torch.cuda.is_available() and GPU >= 0 else "cpu")
+        # self.device = torch.device("cuda:%d" % (GPU) if torch.cuda.is_available() and GPU >= 0 else "cpu")
+        self.device = torch.device("mps")
         self.seed = seed
 
         self.logger.info(
@@ -188,6 +192,7 @@ class HIST(Model):
         return daily_index, daily_count
 
     def train_epoch(self, x_train, y_train, stock_index):
+
         stock2concept_matrix = np.load(self.stock2concept)
         x_train_values = x_train.values
         y_train_values = np.squeeze(y_train.values)
@@ -200,9 +205,39 @@ class HIST(Model):
 
         for idx, count in zip(daily_index, daily_count):
             batch = slice(idx, idx + count)
-            feature = torch.from_numpy(x_train_values[batch]).float().to(self.device)
-            concept_matrix = torch.from_numpy(stock2concept_matrix[stock_index[batch]]).float().to(self.device)
-            label = torch.from_numpy(y_train_values[batch]).float().to(self.device)
+
+            # feature = torch.from_numpy(x_train_values[batch]).float().to(self.device)
+            # 切片操作，从 x_train_values 数组中提取一个子集
+            batch_data = x_train_values[batch]
+            # 将 NumPy 数组转换为 PyTorch 张量
+            tensor_data = torch.from_numpy(batch_data)
+            # 将张量的数据类型转换为浮点数
+            float_data = tensor_data.float()
+            # 将张量移动到指定的设备
+            feature = float_data.to(self.device)
+
+            # concept_matrix = torch.from_numpy(stock2concept_matrix[stock_index[batch]]).float().to(self.device)
+            # 索引操作，从 stock2concept_matrix 数组中提取一个子集
+            batch_concept_matrix = stock2concept_matrix[stock_index[batch]]
+            # 将 NumPy 数组转换为 PyTorch 张量
+            tensor_data = torch.from_numpy(batch_concept_matrix)
+            # 将张量的数据类型转换为浮点数
+            float_data = tensor_data.float()
+            # 将张量移动到指定的设备
+            concept_matrix = float_data.to(self.device)
+
+            # label = torch.from_numpy(y_train_values[batch]).float().to(self.device)
+            # 切片操作，从 y_train_values 数组中提取一个子集
+            batch_label = y_train_values[batch]
+            # 将 NumPy 数组转换为 PyTorch 张量
+            tensor_label = torch.from_numpy(batch_label)
+            # 将张量的数据类型转换为浮点数
+            float_label = tensor_label.float()
+            # 将张量移动到指定的设备
+            label = float_label.to(self.device)
+
+            # pdb.set_trace()
+
             pred = self.HIST_model(feature, concept_matrix)
             loss = self.loss_fn(pred, label)
 
@@ -232,10 +267,12 @@ class HIST(Model):
             concept_matrix = torch.from_numpy(stock2concept_matrix[stock_index[batch]]).float().to(self.device)
             label = torch.from_numpy(y_values[batch]).float().to(self.device)
             with torch.no_grad():
+                # pdb.set_trace()
+
                 pred = self.HIST_model(feature, concept_matrix)
+    
                 loss = self.loss_fn(pred, label)
                 losses.append(loss.item())
-
                 score = self.metric_fn(pred, label)
                 scores.append(score.item())
 
@@ -273,6 +310,9 @@ class HIST(Model):
         stop_steps = 0
         best_score = -np.inf
         best_epoch = 0
+
+        best_param = self.HIST_model.state_dict()
+
         evals_result["train"] = []
         evals_result["valid"] = []
 
@@ -286,7 +326,8 @@ class HIST(Model):
 
         if self.model_path is not None:
             self.logger.info("Loading pretrained model...")
-            pretrained_model.load_state_dict(torch.load(self.model_path))
+            # pretrained_model.load_state_dict(torch.load(self.model_path))
+            pretrained_model.load_state_dict(torch.load(self.model_path, map_location=self.device))
 
         model_dict = self.HIST_model.state_dict()
         pretrained_dict = {
@@ -298,14 +339,18 @@ class HIST(Model):
 
         # train
         self.logger.info("training...")
+        self.logger.info("total epochs: %d" % self.n_epochs)
         self.fitted = True
 
         for step in range(self.n_epochs):
             self.logger.info("Epoch%d:", step)
+            self.logger.info("已用显存: %d Byte" % torch.mps.current_allocated_memory())
             self.logger.info("training...")
+            
             self.train_epoch(x_train, y_train, stock_index_train)
 
             self.logger.info("evaluating...")
+
             train_loss, train_score = self.test_epoch(x_train, y_train, stock_index_train)
             val_loss, val_score = self.test_epoch(x_valid, y_valid, stock_index_valid)
             self.logger.info("train %.6f, valid %.6f" % (train_score, val_score))
@@ -429,11 +474,17 @@ class HISTModel(nn.Module):
         return cos_similarity
 
     def forward(self, x, concept_matrix):
-        device = torch.device(torch.get_device(x))
+
+        # device = torch.device(torch.get_device(x))
+        device = torch.device(x.device)
 
         x_hidden = x.reshape(len(x), self.d_feat, -1)  # [N, F, T]
         x_hidden = x_hidden.permute(0, 2, 1)  # [N, T, F]
+
+        # pdb.set_trace()
+
         x_hidden, _ = self.rnn(x_hidden)
+
         x_hidden = x_hidden[:, -1, :]
 
         # Predefined Concept Module

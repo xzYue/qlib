@@ -53,6 +53,8 @@ class LSTM(Model):
         seed=None,
         **kwargs,
     ):
+        torch.set_default_dtype(torch.float32)  # 强制使用单精度计算
+
         # Set logger.
         self.logger = get_module_logger("LSTM")
         self.logger.info("LSTM pytorch version...")
@@ -69,7 +71,9 @@ class LSTM(Model):
         self.early_stop = early_stop
         self.optimizer = optimizer.lower()
         self.loss = loss
-        self.device = torch.device("cuda:%d" % (GPU) if torch.cuda.is_available() and GPU >= 0 else "cpu")
+        # self.device = torch.device("cuda:%d" % (GPU) if torch.cuda.is_available() and GPU >= 0 else "cpu")
+        self.device = torch.device("mps")
+
         self.seed = seed
 
         self.logger.info(
@@ -223,6 +227,9 @@ class LSTM(Model):
         train_loss = 0
         best_score = -np.inf
         best_epoch = 0
+
+        best_param = self.lstm_model.state_dict()
+
         evals_result["train"] = []
         evals_result["valid"] = []
 
@@ -302,5 +309,8 @@ class LSTMModel(nn.Module):
         # x: [N, F*T]
         x = x.reshape(len(x), self.d_feat, -1)  # [N, F, T]
         x = x.permute(0, 2, 1)  # [N, T, F]
+        
+        # import pdb; pdb.set_trace()
+
         out, _ = self.rnn(x)
         return self.fc_out(out[:, -1, :]).squeeze()
